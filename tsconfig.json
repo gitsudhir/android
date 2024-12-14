@@ -1,7 +1,12 @@
 {
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
+  "esModuleInterop": true,
     "strict": true,
+    "jsx": "react-native",  // Add this for React Native if it's missing
+    "moduleResolution": "node",
+    "module": "esnext",
+    "target": "esnext",
     "paths": {
       "@/*": [
         "./*"
@@ -15,3 +20,4 @@
     "expo-env.d.ts"
   ]
 }
+
