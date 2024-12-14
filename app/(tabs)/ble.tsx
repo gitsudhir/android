@@ -1,53 +1,51 @@
 import React, { useState, useEffect } from 'react';
 import { ScrollView, Button, Text, View, Platform, PermissionsAndroid } from 'react-native';
-import { BleManager, Device } from 'react-native-ble-plx';
+import { BleManager, Device, BleError } from 'react-native-ble-plx';
 
+// BLE Manager Initialization
 const manager = new BleManager();
 
 export default function BLEScreen() {
-  const [devices, setDevices] = useState<Device[]>([]); // Stores paired devices
+  const [devices, setDevices] = useState<Device[]>([]); // Stores devices found
   const [connectedDevice, setConnectedDevice] = useState<Device | null>(null);
   const [isScanning, setIsScanning] = useState<boolean>(false);
   const [isConnected, setIsConnected] = useState<boolean>(false);
+  const [color, setColor] = useState<string>('white'); // Assuming the BLE device sends color info
 
-  // Request Android permissions for Bluetooth
+  // Request Android 12+ Permissions
   const requestAndroidPermissions = async () => {
     if (Platform.OS === 'android') {
-      const bluetoothPermission = await PermissionsAndroid.request(
-        PermissionsAndroid.PERMISSIONS.BLUETOOTH,
-      );
-      const bluetoothAdminPermission = await PermissionsAndroid.request(
-        PermissionsAndroid.PERMISSIONS.BLUETOOTH_ADMIN,
-      );
-      const locationPermission = await PermissionsAndroid.request(
-        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-      );
+      const isAndroid12OrHigher = Platform.Version >= 31;
 
-      return (
-        bluetoothPermission === 'granted' &&
-        bluetoothAdminPermission === 'granted' &&
-        locationPermission === 'granted'
-      );
+      if (isAndroid12OrHigher) {
+        // Android 12+ (API Level 31) permissions
+        const bluetoothScanPermission = await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN
+        );
+        const bluetoothConnectPermission = await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT
+        );
+        const locationPermission = await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION
+        );
+
+        return (
+          bluetoothScanPermission === 'granted' &&
+          bluetoothConnectPermission === 'granted' &&
+          locationPermission === 'granted'
+        );
+      } else {
+        // Android versions lower than 12
+        const locationPermission = await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION
+        );
+        return locationPermission === 'granted';
+      }
     }
     return true; // Automatically handled on iOS
   };
 
-  useEffect(() => {
-    const initBluetooth = async () => {
-      // Check if Bluetooth is enabled
-      const isEnabled = await manager.enable();
-      if (!isEnabled) {
-        alert('Bluetooth is not enabled');
-      }
-    };
-    initBluetooth();
-
-    return () => {
-      manager.destroy();
-    };
-  }, []);
-
-  // Request necessary permissions on component mount
+  // Request permissions on component mount
   useEffect(() => {
     const initPermissions = async () => {
       const hasPermission = await requestAndroidPermissions();
@@ -56,11 +54,17 @@ export default function BLEScreen() {
       }
     };
     initPermissions();
+
+    return () => {
+      manager.destroy();
+    };
   }, []);
 
-  // Start scanning for Bluetooth devices
+  // Start scanning for devices
   const scanForDevices = () => {
     setIsScanning(true);
+    setDevices([]); // Clear previous devices list before scanning
+
     manager.startDeviceScan(null, null, (error, device) => {
       if (error) {
         console.error('Failed to scan devices', error);
@@ -69,7 +73,10 @@ export default function BLEScreen() {
 
       // Avoid adding duplicate devices
       if (device && !devices.some((d) => d.id === device.id)) {
-        setDevices((prevDevices) => [...prevDevices, device]);
+        // Add device to the list if it's either "Arduino" or any custom name
+        if (device.localName === 'Arduino' || device.name === 'Arduino'|| device.name === 'HC-05') {
+          setDevices((prevDevices) => [...prevDevices, device]);
+        }
       }
     });
 
@@ -80,31 +87,58 @@ export default function BLEScreen() {
     }, 10000);
   };
 
-  // Connect to the selected device
+  // Connect to a device and discover services & characteristics
   const connectToDevice = async (device: Device) => {
     try {
-      await manager.connectToDevice(device.id);
-      await device.discoverAllServicesAndCharacteristics();
-      setConnectedDevice(device);
+      const deviceConnection = await manager.connectToDevice(device.id);
+      setConnectedDevice(deviceConnection);
+      await deviceConnection.discoverAllServicesAndCharacteristics();
       setIsConnected(true);
       setIsScanning(false); // Stop scanning after connecting
+      startStreamingData(deviceConnection); // Start streaming data after connection
     } catch (e) {
       console.log('Failed to connect to device', e);
     }
   };
 
-  // Send data to Arduino via BLE (Control the LED)
+  // Start streaming real-time data from the device
+  const startStreamingData = async (device: Device) => {
+    const DATA_SERVICE_UUID = '19b10000-e8f2-537e-4f6c-d104768a1214'; // Example UUID
+    const COLOR_CHARACTERISTIC_UUID = '19b10001-e8f2-537e-4f6c-d104768a1217'; // Example UUID
+
+    device.monitorCharacteristicForService(
+      DATA_SERVICE_UUID,
+      COLOR_CHARACTERISTIC_UUID,
+      onDataUpdate
+    );
+  };
+
+  // Handle real-time data updates
+  const onDataUpdate = (error: BleError | null, characteristic: any) => {
+    if (error) {
+      console.error(error);
+      return;
+    }
+    if (!characteristic?.value) {
+      console.log('No Data received');
+      return;
+    }
+
+    // Assuming the data is a base64 string representing a color
+    const colorCode = Buffer.from(characteristic.value, 'base64').toString('utf8');
+    setColor(colorCode);
+  };
+
+  // Send data to the connected device (e.g., control LED)
   const sendData = async (data: string) => {
     if (connectedDevice) {
       try {
-        // Using common UUIDs for Bluetooth serial communication
-        const serviceUUID = '0000ffe0-0000-1000-8000-00805f9b34fb'; // Default Serial Port Profile service UUID
-        const characteristicUUID = '0000ffe1-0000-1000-8000-00805f9b34fb'; // Default characteristic UUID for data transfer
+        const serviceUUID = '0000ffe0-0000-1000-8000-00805f9b34fb'; // Serial Port Profile service UUID
+        const characteristicUUID = '0000ffe1-0000-1000-8000-00805f9b34fb'; // Characteristic UUID for data transfer
 
-        // Write the data to the connected device
         await connectedDevice.writeCharacteristicWithResponseForService(
-          serviceUUID, 
-          characteristicUUID, 
+          serviceUUID,
+          characteristicUUID,
           data
         );
         console.log(`Sent data: ${data}`);
@@ -135,11 +169,11 @@ export default function BLEScreen() {
         <Text style={{ fontSize: 24, marginBottom: 20 }}>Control LED via Bluetooth</Text>
 
         {/* Start/Stop Scanning */}
-        <Button title={isScanning ? 'Stop Scanning' : 'Scan for Devices B'} onPress={scanForDevices} />
+        <Button title={isScanning ? 'Stop Scanning' : 'Scan for Devices'} onPress={scanForDevices} />
 
-        {/* List of paired devices */}
+        {/* List of found devices */}
         <View style={{ marginTop: 20 }}>
-          <Text style={{ fontSize: 18 }}>Paired Devices:</Text>
+          <Text style={{ fontSize: 18 }}>Devices:</Text>
           {devices.length === 0 ? (
             <Text>No devices found</Text>
           ) : (
@@ -168,6 +202,9 @@ export default function BLEScreen() {
             <Button title="Turn LED OFF" onPress={() => sendData('0')} />
           </View>
         )}
+
+        {/* Display color received from the device */}
+        <Text style={{ marginTop: 20, fontSize: 18 }}>Color: {color}</Text>
       </View>
     </ScrollView>
   );
