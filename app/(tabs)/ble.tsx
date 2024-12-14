@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { ScrollView, Button, Text, View, Platform, PermissionsAndroid } from 'react-native';
-import BluetoothSerial from 'react-native-bluetooth-serial';
+import { BleManager, Device } from 'react-native-ble-plx';
+
+const manager = new BleManager();
 
 export default function BLEScreen() {
-  const [devices, setDevices] = useState<any[]>([]); // Stores paired devices
-  const [connectedDevice, setConnectedDevice] = useState<any | null>(null);
+  const [devices, setDevices] = useState<Device[]>([]); // Stores paired devices
+  const [connectedDevice, setConnectedDevice] = useState<Device | null>(null);
   const [isScanning, setIsScanning] = useState<boolean>(false);
   const [isConnected, setIsConnected] = useState<boolean>(false);
 
@@ -33,33 +35,19 @@ export default function BLEScreen() {
   useEffect(() => {
     const initBluetooth = async () => {
       // Check if Bluetooth is enabled
-      const isEnabled = await BluetoothSerial.isEnabled();
+      const isEnabled = await manager.enable();
       if (!isEnabled) {
         alert('Bluetooth is not enabled');
       }
     };
     initBluetooth();
+
+    return () => {
+      manager.destroy();
+    };
   }, []);
 
-  useEffect(() => {
-    const setupBluetoothListener = async () => {
-      // Make sure we have a valid device connection
-      if (connectedDevice) {
-        // Add event listener for data reception from the device
-        BluetoothSerial.on('data', (data: any) => {
-          console.log('Received data: ', data);
-        });
-      }
-    };
-
-    setupBluetoothListener();
-
-    // Cleanup listener on component unmount or when device is disconnected
-    return () => {
-      BluetoothSerial.removeListener('data');
-    };
-  }, [connectedDevice]);
-
+  // Request necessary permissions on component mount
   useEffect(() => {
     const initPermissions = async () => {
       const hasPermission = await requestAndroidPermissions();
@@ -70,22 +58,33 @@ export default function BLEScreen() {
     initPermissions();
   }, []);
 
-  // Scan for Bluetooth devices
-  const scanForDevices = async () => {
+  // Start scanning for Bluetooth devices
+  const scanForDevices = () => {
     setIsScanning(true);
-    try {
-      await BluetoothSerial.discoverUnpairedDevices();
-      const pairedDevices = await BluetoothSerial.list();
-      setDevices(pairedDevices); // Show paired devices
-    } catch (error) {
-      console.error('Failed to scan devices', error);
-    }
+    manager.startDeviceScan(null, null, (error, device) => {
+      if (error) {
+        console.error('Failed to scan devices', error);
+        return;
+      }
+
+      // Avoid adding duplicate devices
+      if (device && !devices.some((d) => d.id === device.id)) {
+        setDevices((prevDevices) => [...prevDevices, device]);
+      }
+    });
+
+    // Stop scanning after 10 seconds
+    setTimeout(() => {
+      manager.stopDeviceScan();
+      setIsScanning(false);
+    }, 10000);
   };
 
-  // Connect to the selected device (HC-05)
-  const connectToDevice = async (device: any) => {
+  // Connect to the selected device
+  const connectToDevice = async (device: Device) => {
     try {
-      await BluetoothSerial.connect(device.id);
+      await manager.connectToDevice(device.id);
+      await device.discoverAllServicesAndCharacteristics();
       setConnectedDevice(device);
       setIsConnected(true);
       setIsScanning(false); // Stop scanning after connecting
@@ -94,11 +93,20 @@ export default function BLEScreen() {
     }
   };
 
-  // Send data to Arduino via HC-05 (Control the LED)
+  // Send data to Arduino via BLE (Control the LED)
   const sendData = async (data: string) => {
     if (connectedDevice) {
       try {
-        await BluetoothSerial.write(data);
+        // Using common UUIDs for Bluetooth serial communication
+        const serviceUUID = '0000ffe0-0000-1000-8000-00805f9b34fb'; // Default Serial Port Profile service UUID
+        const characteristicUUID = '0000ffe1-0000-1000-8000-00805f9b34fb'; // Default characteristic UUID for data transfer
+
+        // Write the data to the connected device
+        await connectedDevice.writeCharacteristicWithResponseForService(
+          serviceUUID, 
+          characteristicUUID, 
+          data
+        );
         console.log(`Sent data: ${data}`);
       } catch (e) {
         console.log('Error sending data', e);
@@ -112,7 +120,7 @@ export default function BLEScreen() {
   const disconnectDevice = async () => {
     if (connectedDevice) {
       try {
-        await BluetoothSerial.disconnect();
+        await manager.cancelDeviceConnection(connectedDevice.id);
         setIsConnected(false);
         setConnectedDevice(null);
       } catch (e) {
@@ -127,7 +135,7 @@ export default function BLEScreen() {
         <Text style={{ fontSize: 24, marginBottom: 20 }}>Control LED via Bluetooth</Text>
 
         {/* Start/Stop Scanning */}
-        <Button title={isScanning ? 'Stop Scanning' : 'Scan for Devices'} onPress={scanForDevices} />
+        <Button title={isScanning ? 'Stop Scanning' : 'Scan for Devices B'} onPress={scanForDevices} />
 
         {/* List of paired devices */}
         <View style={{ marginTop: 20 }}>
@@ -163,4 +171,4 @@ export default function BLEScreen() {
       </View>
     </ScrollView>
   );
-};
+}
