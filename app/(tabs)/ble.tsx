@@ -11,6 +11,19 @@ export default function BLEScreen() {
   const [isScanning, setIsScanning] = useState<boolean>(false);
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [color, setColor] = useState<string>('white'); // Assuming the BLE device sends color info
+  const [logs, setLogs] = useState<string[]>([]); // State to store logs
+
+  // Function to log events
+  const logEvent = (message: string) => {
+    setLogs((prevLogs) => [...prevLogs, `[LOG] ${message}`]);
+    console.log(`[LOG] ${message}`);
+  };
+
+  // Function to log errors
+  const logError = (error: any) => {
+    setLogs((prevLogs) => [...prevLogs, `[ERROR] ${error}`]);
+    console.error(`[ERROR] ${error}`);
+  };
 
   // Request Android 12+ Permissions
   const requestAndroidPermissions = async () => {
@@ -18,7 +31,6 @@ export default function BLEScreen() {
       const isAndroid12OrHigher = Platform.Version >= 31;
 
       if (isAndroid12OrHigher) {
-        // Android 12+ (API Level 31) permissions
         const bluetoothScanPermission = await PermissionsAndroid.request(
           PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN
         );
@@ -29,23 +41,29 @@ export default function BLEScreen() {
           PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION
         );
 
-        return (
-          bluetoothScanPermission === 'granted' &&
-          bluetoothConnectPermission === 'granted' &&
-          locationPermission === 'granted'
-        );
+        if (bluetoothScanPermission === 'granted' && bluetoothConnectPermission === 'granted' && locationPermission === 'granted') {
+          logEvent("Permissions granted for Android 12+.");
+          return true;
+        } else {
+          logError("Bluetooth permissions not granted.");
+          return false;
+        }
       } else {
-        // Android versions lower than 12
         const locationPermission = await PermissionsAndroid.request(
           PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION
         );
-        return locationPermission === 'granted';
+        if (locationPermission === 'granted') {
+          logEvent("Permissions granted for Android version < 12.");
+          return true;
+        } else {
+          logError("Location permission not granted.");
+          return false;
+        }
       }
     }
     return true; // Automatically handled on iOS
   };
 
-  // Request permissions on component mount
   useEffect(() => {
     const initPermissions = async () => {
       const hasPermission = await requestAndroidPermissions();
@@ -57,6 +75,7 @@ export default function BLEScreen() {
 
     return () => {
       manager.destroy();
+      logEvent("BLE Manager destroyed.");
     };
   }, []);
 
@@ -65,18 +84,17 @@ export default function BLEScreen() {
     setIsScanning(true);
     setDevices([]); // Clear previous devices list before scanning
 
+    logEvent("Started scanning for devices...");
+
     manager.startDeviceScan(null, null, (error, device) => {
       if (error) {
-        console.error('Failed to scan devices', error);
+        logError(`Failed to scan devices: ${error}`);
         return;
       }
 
-      // Avoid adding duplicate devices
       if (device && !devices.some((d) => d.id === device.id)) {
-        // Add device to the list if it's either "Arduino" or any custom name
-        if (device.localName === 'Arduino' || device.name === 'Arduino'|| device.name === 'HC-05') {
-          setDevices((prevDevices) => [...prevDevices, device]);
-        }
+        logEvent(`Found device: ${device.name || device.id}`);
+        setDevices((prevDevices) => [...prevDevices, device]);
       }
     });
 
@@ -84,20 +102,23 @@ export default function BLEScreen() {
     setTimeout(() => {
       manager.stopDeviceScan();
       setIsScanning(false);
+      logEvent("Stopped scanning for devices.");
     }, 10000);
   };
 
   // Connect to a device and discover services & characteristics
   const connectToDevice = async (device: Device) => {
     try {
+      logEvent(`Connecting to device: ${device.name || device.id}`);
       const deviceConnection = await manager.connectToDevice(device.id);
       setConnectedDevice(deviceConnection);
       await deviceConnection.discoverAllServicesAndCharacteristics();
       setIsConnected(true);
       setIsScanning(false); // Stop scanning after connecting
+      logEvent(`Connected to device: ${device.name || device.id}`);
       startStreamingData(deviceConnection); // Start streaming data after connection
     } catch (e) {
-      console.log('Failed to connect to device', e);
+      logError(`Failed to connect to device: ${e}`);
     }
   };
 
@@ -111,22 +132,23 @@ export default function BLEScreen() {
       COLOR_CHARACTERISTIC_UUID,
       onDataUpdate
     );
+    logEvent("Started streaming data from device.");
   };
 
   // Handle real-time data updates
   const onDataUpdate = (error: BleError | null, characteristic: any) => {
     if (error) {
-      console.error(error);
+      logError(`Error receiving data: ${error}`);
       return;
     }
     if (!characteristic?.value) {
-      console.log('No Data received');
+      logEvent('No Data received');
       return;
     }
 
-    // Assuming the data is a base64 string representing a color
     const colorCode = Buffer.from(characteristic.value, 'base64').toString('utf8');
     setColor(colorCode);
+    logEvent(`Received color data: ${colorCode}`);
   };
 
   // Send data to the connected device (e.g., control LED)
@@ -141,12 +163,13 @@ export default function BLEScreen() {
           characteristicUUID,
           data
         );
-        console.log(`Sent data: ${data}`);
+        logEvent(`Sent data: ${data}`);
       } catch (e) {
-        console.log('Error sending data', e);
+        logError(`Error sending data: ${e}`);
       }
     } else {
       alert('No device connected');
+      logError("No device connected for sending data.");
     }
   };
 
@@ -157,8 +180,9 @@ export default function BLEScreen() {
         await manager.cancelDeviceConnection(connectedDevice.id);
         setIsConnected(false);
         setConnectedDevice(null);
+        logEvent(`Disconnected from device: ${connectedDevice.name || 'Unknown Device'}`);
       } catch (e) {
-        console.log('Error disconnecting', e);
+        logError(`Error disconnecting: ${e}`);
       }
     }
   };
@@ -168,26 +192,19 @@ export default function BLEScreen() {
       <View style={{ padding: 20 }}>
         <Text style={{ fontSize: 24, marginBottom: 20 }}>Control LED via Bluetooth</Text>
 
-        {/* Start/Stop Scanning */}
         <Button title={isScanning ? 'Stop Scanning' : 'Scan for Devices'} onPress={scanForDevices} />
 
-        {/* List of found devices */}
         <View style={{ marginTop: 20 }}>
           <Text style={{ fontSize: 18 }}>Devices:</Text>
           {devices.length === 0 ? (
             <Text>No devices found</Text>
           ) : (
             devices.map((device) => (
-              <Button
-                key={device.id}
-                title={`Connect to ${device.name || device.id}`}
-                onPress={() => connectToDevice(device)}
-              />
+              <Button key={device.id} title={`Connect to ${device.name || device.id}`} onPress={() => connectToDevice(device)} />
             ))
           )}
         </View>
 
-        {/* Connect/Disconnect Buttons */}
         {isConnected && connectedDevice && (
           <View style={{ marginTop: 20 }}>
             <Text>Connected to: {connectedDevice.name || 'Unknown Device'}</Text>
@@ -195,7 +212,6 @@ export default function BLEScreen() {
           </View>
         )}
 
-        {/* LED control buttons */}
         {isConnected && (
           <View style={{ marginTop: 20 }}>
             <Button title="Turn LED ON" onPress={() => sendData('1')} />
@@ -203,8 +219,24 @@ export default function BLEScreen() {
           </View>
         )}
 
-        {/* Display color received from the device */}
         <Text style={{ marginTop: 20, fontSize: 18 }}>Color: {color}</Text>
+
+        {/* Display logs */}
+        <View style={{ marginTop: 30, width: '100%', maxHeight: 300 }}>
+          <Text style={{ fontSize: 18, marginBottom: 10 }}>Logs:</Text>
+          <ScrollView style={{ borderWidth: 1, padding: 10 }}>
+            {logs.map((log, index) => (
+              <Text
+                key={index}
+                style={{
+                  fontSize: 14,
+                  color: log.startsWith('[ERROR]') ? 'red' : 'black',
+                }}>
+                {log}
+              </Text>
+            ))}
+          </ScrollView>
+        </View>
       </View>
     </ScrollView>
   );
